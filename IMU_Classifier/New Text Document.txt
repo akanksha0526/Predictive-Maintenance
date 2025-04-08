@@ -1,0 +1,119 @@
+#include <Arduino_BMI270_BMM150.h>  // For IMU
+#include <PDM.h>                    // For microphone
+
+// IMU Configuration
+const float accelerationThreshold = 2.5; // threshold of significant in G's
+const int numSamples = 119;
+
+// Microphone Configuration
+const int sampleRate = 16000;       // 16 kHz sample rate
+const int bufferSize = 256;         // Size of audio buffer
+short sampleBuffer[bufferSize];      // Buffer to hold audio samples
+volatile int samplesRead = 0;        // Number of audio samples read
+int imuSamplesRead = numSamples;     // Number of IMU samples read
+
+void setup() {
+  Serial.begin(9600);
+  while (!Serial);
+
+  // Initialize IMU
+  if (!IMU.begin()) {
+    Serial.println("Failed to initialize IMU!");
+    while (1);
+  }
+
+  // Initialize microphone
+  PDM.onReceive(onPDMdata);
+  if (!PDM.begin(1, sampleRate)) {
+    Serial.println("Failed to start PDM!");
+    while (1);
+  }
+
+  // Print the header
+  Serial.println("aX,aY,aZ,gX,gY,gZ,mic");
+}
+
+void loop() {
+  float aX, aY, aZ, gX, gY, gZ;
+
+  // Wait for significant motion
+  while (imuSamplesRead == numSamples) {
+    if (IMU.accelerationAvailable()) {
+      // Read the acceleration data
+      IMU.readAcceleration(aX, aY, aZ);
+
+      // Sum up the absolutes
+      float aSum = fabs(aX) + fabs(aY) + fabs(aZ);
+
+      // Check if it's above the threshold
+      if (aSum >= accelerationThreshold) {
+        // Reset the sample read count
+        imuSamplesRead = 0;
+        break;
+      }
+    }
+  }
+
+  // Check if all required samples have been read since the last significant motion
+  while (imuSamplesRead < numSamples) {
+    // Check if both new acceleration and gyroscope data is available
+    if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
+      // Read the acceleration and gyroscope data
+      IMU.readAcceleration(aX, aY, aZ);
+      IMU.readGyroscope(gX, gY, gZ);
+
+      imuSamplesRead++;
+
+      // Print IMU data in CSV format
+      Serial.print(aX, 3);
+      Serial.print(',');
+      Serial.print(aY, 3);
+      Serial.print(',');
+      Serial.print(aZ, 3);
+      Serial.print(',');
+      Serial.print(gX, 3);
+      Serial.print(',');
+      Serial.print(gY, 3);
+      Serial.print(',');
+      Serial.print(gZ, 3);
+      Serial.print(',');
+
+      // Print microphone data if available
+      if (samplesRead > 0) {
+        // Calculate RMS of audio samples
+        float rms = 0;
+        for (int i = 0; i < samplesRead; i++) {
+          rms += sampleBuffer[i] * sampleBuffer[i];
+        }
+        rms = sqrt(rms / samplesRead);
+        Serial.print(rms);
+        
+        // Reset samples read
+        noInterrupts();
+        samplesRead = 0;
+        interrupts();
+      } else {
+        Serial.print("0");
+      }
+      
+      Serial.println();
+
+      if (imuSamplesRead == numSamples) {
+        // Add an empty line if it's the last sample
+        Serial.println();
+      }
+    }
+  }
+}
+
+// Callback function for PDM microphone
+void onPDMdata() {
+  // Query the number of bytes available
+  int bytesAvailable = PDM.available();
+  
+  // Read into the sample buffer
+  PDM.read(sampleBuffer, bytesAvailable);
+  
+  // 16-bit, 2 bytes per sample
+  samplesRead = bytesAvailable / 2;
+}
